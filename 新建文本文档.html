@@ -109,9 +109,9 @@
 
     <script>
         // ==============================================
-        // 配置：替换成你的GitHub Gist ID！！！
+        // 配置：已替换为你提供的Gist ID
         // ==============================================
-        const GIST_ID = "你的GistID"; // 比如abc123def456
+        const GIST_ID = "bbeb7a62bb38feb5bf386d0443f4ab3c206a0dbd";
         const GIST_URL = `https://api.github.com/gists/${GIST_ID}`;
         const CONFIG_FILE = "silver_recycle_config.json"; // Gist里的文件名
 
@@ -241,7 +241,7 @@
         };
 
         // ==============================================
-        // 原有逻辑保留，仅替换存储为Gist（适配async/await）
+        // 原有逻辑保留，修复变量名错误
         // ==============================================
         let currentLinkGroup = null;
         let countdownTimer = null;
@@ -307,6 +307,7 @@
             const weightPool = [];
             
             availableLinks.forEach(linkGroup => {
+                // 修复变量名错误：group → linkGroup
                 const drawnCount = drawnComments[linkGroup.link]?.length || 0;
                 const remainingCount = linkGroup.comments.length - drawnCount;
                 
