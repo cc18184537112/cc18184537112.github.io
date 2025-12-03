@@ -1,0 +1,485 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>链接评论抽取工具（白银回收专属）</title>
+    <style>
+        body {
+            max-width: 600px;
+            margin: 20px auto;
+            padding: 0 15px;
+            font-family: sans-serif;
+        }
+        .container {
+            background: #f8f9fa;
+            padding: 20px;
+            border-radius: 8px;
+            box-shadow: 0 2px 5px #eee;
+        }
+        .result {
+            min-height: 50px;
+            margin: 15px 0;
+            padding: 10px;
+            border: 1px dashed #ccc;
+            text-align: center;
+            word-break: break-all;
+        }
+        button {
+            width: 100%;
+            padding: 10px;
+            margin: 5px 0;
+            border: none;
+            border-radius: 4px;
+            color: white;
+            cursor: pointer;
+            font-size: 14px;
+        }
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        .status {
+            text-align: center;
+            margin: 10px 0;
+            color: #666;
+            padding: 8px;
+            border-radius: 4px;
+            background: #f0f0f0;
+        }
+        .draw-btn {
+            background: #007bff;
+        }
+        .open-btn {
+            background: #28a745;
+        }
+        .copy-btn {
+            background: #ffc107;
+            color: #333;
+        }
+        .toast {
+            position: fixed;
+            bottom: 20px;
+            left: 50%;
+            transform: translateX(-50%);
+            padding: 8px 15px;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            border-radius: 4px;
+            display: none;
+            z-index: 100;
+        }
+        .info {
+            font-size: 14px;
+            color: #666;
+            text-align: center;
+            margin: 5px 0;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h3>链接评论抽取工具（白银回收专属）</h3>
+        <div class="status">
+            状态: <span id="status-text">准备就绪</span> | 
+            下次可抽取链接: <span id="countdown">立即</span>
+        </div>
+
+        <!-- 链接抽取区域 -->
+        <div>
+            <h4>1. 抽取链接</h4>
+            <div class="result" id="linkResult">点击下方按钮抽取</div>
+            <button id="drawLinkBtn" class="draw-btn">抽取链接</button>
+            <button id="openLinkBtn" class="open-btn" disabled>打开链接</button>
+            <div class="info">关闭网页后状态保留，5分钟后可重新抽取（按剩余评论数加权概率）</div>
+        </div>
+
+        <!-- 评论抽取区域 -->
+        <div style="margin-top: 20px;">
+            <h4>2. 抽取评论（先抽链接）</h4>
+            <div class="result" id="commentResult">请先抽取链接</div>
+            <button id="drawCommentBtn" class="draw-btn" disabled>抽取评论</button>
+            <button id="copyCommentBtn" class="copy-btn" disabled>复制评论内容</button>
+            <div class="info">多评论时不可重复抽取，仅剩1条评论时可重复抽取，抽完自动重置</div>
+        </div>
+    </div>
+
+    <!-- 提示框 -->
+    <div class="toast" id="toast"></div>
+
+    <script>
+        // ==============================================
+        // 配置：替换成你的GitHub Gist ID！！！
+        // ==============================================
+        const GIST_ID = "你的GistID"; // 比如abc123def456
+        const GIST_URL = `https://api.github.com/gists/${GIST_ID}`;
+        const CONFIG_FILE = "silver_recycle_config.json"; // Gist里的文件名
+
+        // ==============================================
+        // 原有配置保留不变
+        // ==============================================
+        const LINK_GROUPS = [
+            {
+                link: "https://v.douyin.com/rM1hhIX4Yus/",
+                comments: [
+                    "银手镯收吗？",
+                    "我有百来克的银子，要吗？",
+                    "银子回收20多，真的吗",
+                    "银子怎么收？怎么联系"
+                ]
+            }
+        ];
+
+        const CONFIG = {
+            LINK_DRAW_INTERVAL: 300000, 
+            STORAGE_KEYS: {
+                LAST_DRAW_TIME: 'silver_recycle_last_draw_time_v2',
+                DRAWN_COMMENTS: 'silver_recycle_drawn_comments_v2',
+                LAST_LINK: 'silver_recycle_last_link_v2',
+                VERSION: 'silver_recycle_version_9.0'
+            }
+        };
+
+        // ==============================================
+        // 核心：GitHub Gist存储管理（替换本地存储）
+        // ==============================================
+        const GistStorageManager = {
+            // 读取Gist中的配置
+            async getConfig() {
+                try {
+                    const res = await fetch(GIST_URL);
+                    const data = await res.json();
+                    const content = data.files[CONFIG_FILE].content;
+                    return JSON.parse(content) || {};
+                } catch (err) {
+                    // 首次读取失败则初始化
+                    await this.reset();
+                    return this.getConfig();
+                }
+            },
+
+            // 更新Gist中的配置
+            async updateConfig(newConfig) {
+                try {
+                    const res = await fetch(GIST_URL, {
+                        method: 'PATCH',
+                        headers: {
+                            'Content-Type': 'application/json',
+                        },
+                        body: JSON.stringify({
+                            files: {
+                                [CONFIG_FILE]: {
+                                    content: JSON.stringify(newConfig)
+                                }
+                            }
+                        })
+                    });
+                    return res.ok;
+                } catch (err) {
+                    showToast('Gist同步失败：' + err.message);
+                    return false;
+                }
+            },
+
+            // 初始化/重置配置
+            async reset() {
+                const defaultConfig = {
+                    [CONFIG.STORAGE_KEYS.LAST_DRAW_TIME]: '0',
+                    [CONFIG.STORAGE_KEYS.DRAWN_COMMENTS]: {},
+                    [CONFIG.STORAGE_KEYS.LAST_LINK]: '',
+                    version: CONFIG.STORAGE_KEYS.VERSION
+                };
+                await this.updateConfig(defaultConfig);
+                return defaultConfig;
+            },
+
+            // 原有StorageManager方法适配
+            async init() {
+                const config = await this.getConfig();
+                if (!config.version || config.version !== CONFIG.STORAGE_KEYS.VERSION) {
+                    await this.reset();
+                }
+            },
+            
+            async getLastDrawTime() {
+                const config = await this.getConfig();
+                return parseInt(config[CONFIG.STORAGE_KEYS.LAST_DRAW_TIME] || '0');
+            },
+            
+            async setLastDrawTime(time) {
+                const config = await this.getConfig();
+                config[CONFIG.STORAGE_KEYS.LAST_DRAW_TIME] = time.toString();
+                await this.updateConfig(config);
+            },
+            
+            async getDrawnComments() {
+                const config = await this.getConfig();
+                return config[CONFIG.STORAGE_KEYS.DRAWN_COMMENTS] || {};
+            },
+            
+            async addDrawnComment(link, commentIndex) {
+                const config = await this.getConfig();
+                const drawn = config[CONFIG.STORAGE_KEYS.DRAWN_COMMENTS] || {};
+                if (!drawn[link]) drawn[link] = [];
+                if (!drawn[link].includes(commentIndex)) {
+                    drawn[link].push(commentIndex);
+                    config[CONFIG.STORAGE_KEYS.DRAWN_COMMENTS] = drawn;
+                    await this.updateConfig(config);
+                }
+            },
+            
+            async getLastLink() {
+                const config = await this.getConfig();
+                return config[CONFIG.STORAGE_KEYS.LAST_LINK] || '';
+            },
+            
+            async setLastLink(link) {
+                const config = await this.getConfig();
+                config[CONFIG.STORAGE_KEYS.LAST_LINK] = link;
+                await this.updateConfig(config);
+            }
+        };
+
+        // ==============================================
+        // 原有逻辑保留，仅替换存储为Gist（适配async/await）
+        // ==============================================
+        let currentLinkGroup = null;
+        let countdownTimer = null;
+
+        const elements = {
+            linkResult: document.getElementById('linkResult'),
+            commentResult: document.getElementById('commentResult'),
+            drawLinkBtn: document.getElementById('drawLinkBtn'),
+            drawCommentBtn: document.getElementById('drawCommentBtn'),
+            openLinkBtn: document.getElementById('openLinkBtn'),
+            copyCommentBtn: document.getElementById('copyCommentBtn'),
+            statusText: document.getElementById('status-text'),
+            countdown: document.getElementById('countdown'),
+            toast: document.getElementById('toast')
+        };
+
+        function showToast(message) {
+            elements.toast.textContent = message;
+            elements.toast.style.display = 'block';
+            clearTimeout(window.toastTimer);
+            window.toastTimer = setTimeout(() => {
+                elements.toast.style.display = 'none';
+            }, 2000);
+        }
+
+        async function canDrawLink() {
+            const lastTime = await GistStorageManager.getLastDrawTime();
+            const now = Date.now();
+            return now - lastTime >= CONFIG.LINK_DRAW_INTERVAL;
+        }
+
+        async function getRemainingTime() {
+            const lastTime = await GistStorageManager.getLastDrawTime();
+            const now = Date.now();
+            const elapsed = now - lastTime;
+            return elapsed >= CONFIG.LINK_DRAW_INTERVAL ? 0 : CONFIG.LINK_DRAW_INTERVAL - elapsed;
+        }
+
+        async function updateCountdown() {
+            const remaining = await getRemainingTime();
+            if (remaining > 0) {
+                const minutes = Math.floor(remaining / 60000);
+                const seconds = Math.ceil((remaining % 60000) / 1000);
+                elements.countdown.textContent = `${minutes}:${seconds.toString().padStart(2, '0')}`;
+                elements.drawLinkBtn.disabled = true;
+                countdownTimer = setTimeout(updateCountdown, 1000);
+            } else {
+                elements.countdown.textContent = '立即';
+                elements.drawLinkBtn.disabled = false;
+            }
+        }
+
+        async function getAvailableLinks() {
+            const drawnComments = await GistStorageManager.getDrawnComments();
+            return LINK_GROUPS.filter(group => {
+                const drawnCount = drawnComments[group.link]?.length || 0;
+                return drawnCount < group.comments.length;
+            });
+        }
+
+        async function getWeightedRandomLink(availableLinks) {
+            const drawnComments = await GistStorageManager.getDrawnComments();
+            const weightPool = [];
+            
+            availableLinks.forEach(linkGroup => {
+                const drawnCount = drawnComments[linkGroup.link]?.length || 0;
+                const remainingCount = linkGroup.comments.length - drawnCount;
+                
+                for (let i = 0; i < remainingCount; i++) {
+                    weightPool.push(linkGroup);
+                }
+            });
+            
+            return weightPool[Math.floor(Math.random() * weightPool.length)];
+        }
+
+        async function isOnlyOneCommentLeft() {
+            const drawnComments = await GistStorageManager.getDrawnComments();
+            let totalRemaining = 0;
+            
+            LINK_GROUPS.forEach(group => {
+                const drawnCount = drawnComments[group.link]?.length || 0;
+                totalRemaining += group.comments.length - drawnCount;
+            });
+            
+            return totalRemaining === 1;
+        }
+
+        async function restoreLastState() {
+            const lastLink = await GistStorageManager.getLastLink();
+            const lastDrawTime = await GistStorageManager.getLastDrawTime();
+            const now = Date.now();
+
+            if (lastLink && lastDrawTime && now - lastDrawTime < CONFIG.LINK_DRAW_INTERVAL) {
+                currentLinkGroup = LINK_GROUPS.find(group => group.link === lastLink);
+                if (currentLinkGroup) {
+                    elements.linkResult.textContent = currentLinkGroup.link;
+                    elements.openLinkBtn.disabled = false;
+                    
+                    const drawnComments = await GistStorageManager.getDrawnComments();
+                    const drawnIndices = drawnComments[lastLink] || [];
+                    const remainingCount = currentLinkGroup.comments.length - drawnIndices.length;
+                    const onlyOneLeft = await isOnlyOneCommentLeft();
+
+                    if (remainingCount === 0) {
+                        elements.commentResult.textContent = '该链接无剩余评论';
+                        elements.drawCommentBtn.disabled = true;
+                        elements.statusText.textContent = '已抽取所有评论，5分钟后可抽取新链接';
+                    } else {
+                        elements.commentResult.textContent = onlyOneLeft ? '仅剩1条评论，可重复抽取' : '点击抽取评论';
+                        elements.drawCommentBtn.disabled = false;
+                        elements.copyCommentBtn.disabled = true;
+                        elements.statusText.textContent = `已抽取链接，剩余${remainingCount}条评论可抽`;
+                    }
+                }
+            }
+        }
+
+        async function resetWhenAllDrawn() {
+            const availableLinks = await getAvailableLinks();
+            if (availableLinks.length === 0) {
+                await GistStorageManager.reset();
+                elements.statusText.textContent = '所有评论已重置，可重新抽取';
+                elements.linkResult.textContent = '点击下方按钮抽取';
+                elements.commentResult.textContent = '请先抽取链接';
+                elements.openLinkBtn.disabled = true;
+                elements.drawCommentBtn.disabled = true;
+                elements.copyCommentBtn.disabled = true;
+                showToast('所有评论已抽取完毕，已自动重置');
+                await updateCountdown();
+                return true;
+            }
+            return false;
+        }
+
+        async function drawLink() {
+            const canDraw = await canDrawLink();
+            if (!canDraw) {
+                showToast('每个设备5分钟内仅能抽取1个链接，请稍后再试');
+                return;
+            }
+
+            if (await resetWhenAllDrawn()) {
+                return;
+            }
+
+            const availableLinks = await getAvailableLinks();
+            currentLinkGroup = await getWeightedRandomLink(availableLinks);
+            
+            elements.linkResult.textContent = currentLinkGroup.link;
+            elements.openLinkBtn.disabled = false;
+            
+            const drawnComments = await GistStorageManager.getDrawnComments();
+            const drawnIndices = drawnComments[currentLinkGroup.link] || [];
+            const remainingCount = currentLinkGroup.comments.length - drawnIndices.length;
+            const onlyOneLeft = await isOnlyOneCommentLeft();
+
+            elements.commentResult.textContent = onlyOneLeft ? '仅剩1条评论，可重复抽取' : '点击抽取评论';
+            elements.drawCommentBtn.disabled = false;
+            elements.copyCommentBtn.disabled = true;
+            
+            await GistStorageManager.setLastDrawTime(Date.now());
+            await GistStorageManager.setLastLink(currentLinkGroup.link);
+            
+            elements.statusText.textContent = `已抽取链接，剩余${remainingCount}条评论可抽`;
+            await updateCountdown();
+            showToast('链接抽取成功');
+        }
+
+        async function drawComment() {
+            if (!currentLinkGroup) {
+                showToast('请先抽取链接');
+                return;
+            }
+
+            const drawnComments = await GistStorageManager.getDrawnComments();
+            const drawnIndices = drawnComments[currentLinkGroup.link] || [];
+            const allIndices = currentLinkGroup.comments.map((_, i) => i);
+            const availableIndices = allIndices.filter(i => !drawnIndices.includes(i));
+            const onlyOneLeft = await isOnlyOneCommentLeft();
+            let selectedIndex;
+
+            if (onlyOneLeft) {
+                selectedIndex = availableIndices[0];
+                elements.statusText.textContent = '仅剩1条评论，支持重复抽取';
+            } else {
+                if (availableIndices.length === 0) {
+                    showToast('该链接无剩余评论');
+                    elements.drawCommentBtn.disabled = true;
+                    return;
+                }
+                selectedIndex = availableIndices[Math.floor(Math.random() * availableIndices.length)];
+                await GistStorageManager.addDrawnComment(currentLinkGroup.link, selectedIndex);
+                const newRemaining = currentLinkGroup.comments.length - drawnIndices.length - 1;
+                elements.statusText.textContent = `评论抽取成功，剩余${newRemaining}条评论可抽`;
+            }
+
+            const selectedComment = currentLinkGroup.comments[selectedIndex];
+            elements.commentResult.textContent = selectedComment;
+            elements.copyCommentBtn.disabled = false;
+
+            if (!onlyOneLeft && availableIndices.length === 1) {
+                elements.drawCommentBtn.disabled = true;
+            }
+
+            showToast('评论抽取成功');
+            if (!onlyOneLeft) {
+                await resetWhenAllDrawn();
+            }
+        }
+
+        async function init() {
+            await GistStorageManager.init();
+            await restoreLastState();
+            await updateCountdown();
+            await resetWhenAllDrawn();
+            
+            elements.drawLinkBtn.addEventListener('click', drawLink);
+            elements.drawCommentBtn.addEventListener('click', drawComment);
+            
+            elements.openLinkBtn.addEventListener('click', () => {
+                if (currentLinkGroup?.link) {
+                    window.open(currentLinkGroup.link, '_blank');
+                    showToast('链接已在新窗口打开');
+                }
+            });
+            
+            elements.copyCommentBtn.addEventListener('click', () => {
+                const commentText = elements.commentResult.textContent;
+                if (commentText && commentText !== '请先抽取链接' && commentText !== '该链接无剩余评论') {
+                    navigator.clipboard.writeText(commentText)
+                        .then(() => showToast('评论内容已复制'))
+                        .catch(() => showToast('复制失败，请手动复制'));
+                }
+            });
+        }
+
+        init();
+    </script>
+</body>
+</html>
